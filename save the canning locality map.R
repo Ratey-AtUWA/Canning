@@ -76,14 +76,22 @@ canmat <- matrix(c(115.8402,-32.2424,
                    115.8402,-32.2424),ncol=2,byrow=T)
 kentmat <- matrix(c(115.9203,-32.0375, 
                     115.9203,-32.019,
-                    115.9364,-32.019,
-                    115.9364,-32.0375,
-                   115.9203,-32.0375),ncol=2,byrow=T)
+                    116.1279,-32.019,
+                    116.1279,-32.0375,
+                    115.9203,-32.0375),ncol=2,byrow=T)
+reachmat <- matrix(c(115.9203,-32.155, 
+                    115.9203,-32.015,
+                    116.128,-32.015,
+                    116.128,-32.155,
+                    115.9203,-32.155),ncol=2,byrow=T)
 canpoly <- st_polygon(list(canmat)) |> st_sfc(crs=st_crs(4283))
 canLgPoly <- st_polygon(list(canLg)) |> st_sfc(crs=st_crs(4283))
 kentpoly <- st_polygon(list(kentmat)) |> st_sfc(crs=st_crs(4283))
+reachpoly <- st_polygon(list(reachmat)) |> st_sfc(crs=st_crs(4283))
 canningW <- st_intersection(canning, canpoly)
 kentpool <- st_intersection(canning, kentpoly)
+reach <- st_intersection(canning, reachpoly)
+cat("Reach length (Kent St Weir to Canning Dam) is",round(as.numeric(sum(st_length(reach))/1000),2),"km\n")
 # -~-~-~-~-~-~-~- NEXT LINE VERY SLOW!! -~-~-~-~-~-~-~-
 # cannAll <- st_intersection(shl, canLgPoly)
 # st_write(cannAll, dsn="CanningTributaries.shp")
@@ -121,10 +129,14 @@ plot(cannAll[3], add=T, lwd=2, col=4)
 plot(WCearth[2],add=T,col=10,lwd=3)
 plot(WCearth[2],add=T,col=5,lwd=1, lty="23")
 plot(canning[2], add=T, col=7, lwd=3, lty="13")
+plot(kentpool[1],add=T, col=10,lwd=10)
 plot(canningW[2], add=T, col=10, lwd=8)
 plot(canningW[2], add=T, col=2, lwd=4)
-plot(kentpool[1],add=T, col=10,lwd=10,lend="round")
 plot(kentpool[1],add=T, col=3,lwd=6,lend="round")
+shadowtext(116.0169, -32.0919, labels="–", cex=1.5, 
+           col=1, bg=10, r=0.06) # Seaforth Weir
+shadowtext(116.0169, -32.0935, col=1, bg=10, cex=0.85, 
+           labels="Seaforth\nWeir", pos=4, r=0.06)
 shadowtext(c(115.920787,116.1279),c(-32.021289,-32.151955), 
      labels=c("Kent\nStreet\nWeir","Canning\nDam"), 
      pos=c(3,1), col=1, bg=10, font=2)
@@ -178,8 +190,8 @@ shadowtext(c(116.006,116.015,115.975, 116.108, 116.09, 116.04, 115.937),
 addnortharrow(pos="topright", padin=c(0.75,0.6))
 addscalebar(pos="topright",plotepsg=4283, htin=0.15, label.cex = 1.2, 
             padin=c(0.15,0.35), widthhint = 0.21)
-legend("topright",legend="Map plotted using GDA94 (EPSG:4283)  ", cex=0.8,
-       bg="#ffffffa0", box.col="#00000000", x.int=0.5, y.int=0.5)
+legend("topright",legend="Map plotted using sf in R; CRS is GDA94 (EPSG:4283)  ", 
+       cex=0.75, bg="#ffffffa0", box.col="#00000000", x.int=0.5, y.int=0.5)
 legend("top", bg="#ffffffd0", box.col="white", inset=0.02,
        legend=levels(lu$descriptio),
        cex=0.9, y.int=0.9, pch=22, pt.cex=2, 
