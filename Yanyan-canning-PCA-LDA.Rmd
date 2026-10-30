@@ -1,0 +1,646 @@
+---
+title: "PCA-LDA Canning Sediments"
+output: html_document
+---
+
+```{r load-pax, results='hide'}
+if(!require(car)) install.packages("car")
+if(!require(MASS)) install.packages("MASS")
+if(!require(klaR)) install.packages("klaR")
+if(!require(randomForest)) install.packages("randomForest")
+if(!require(e1071)) install.packages("e1071")
+if(!require(xgboost)) install.packages("xgboost")
+if(!require(viridis)) install.packages("viridis")
+if(!require(stringr)) install.packages("stringr")
+if(!require(TeachingDemos)) install.packages("TeachingDemos")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(plotly)) install.packages("plotly")
+
+library(car)            # needed for `dataEllipse` function etc.
+library(MASS)           # needed for `lda` function etc.
+library(klaR)           # needed for `stepclass` function etc.
+library(randomForest)   # needed for random forest classification
+library(e1071)          # needed for support vector machines
+library(xgboost)        # needed for xgboost machine learning classification
+library(viridis)        # needed for colour palettes
+library(stringr)        # needed for string manipulation
+library(TeachingDemos)  # needed for `shadowtext` function
+library(ggplot2)        # optional for plotting
+library(plotly)         # optional for 3D plotting
+```
+
+```{r read-data, paged.print=FALSE, results='hold'}
+sed26 <- read.csv("YZsedsAll.csv", stringsAsFactors = TRUE)
+sed26$Sample.ID <- as.character(sed26$Sample.ID)
+sed26$XRD.Sample.ID <- as.character(sed26$XRD.Sample.ID)
+# names(sed26)[43] <- "Fe.phases"
+# summary(sed26)
+(summDF <- data.frame(Variable=colnames(sed26),
+                      Has.NA.values=sapply(sed26, function(x){sum(is.na(x))>0}),
+                      n.Missing=sapply(sed26, function(x){sum(is.na(x))}),
+                      row.names = NULL))
+```
+
+```{r CLR-transformation-and-wrangling, paged.print=FALSE}
+
+noNA <- colnames(sed26)[which(summDF$n.Missing==0)]
+numCols <- colnames(sed26)[which(sapply(sed26, is.numeric))]
+(keep <- c(colnames(sed26)[1:5],"Flag",intersect(noNA, numCols)))
+#check it
+cat("Should be the same!\n")
+colnames(sed26[,keep])
+
+# make a copy of the relevant columns from the data
+s26_clr <- sed26[,keep]
+                                                              cat("\n\n")
+# select just the elements since their names have either 2 or 3 characters
+(elements <- colnames(sed26[,keep])[colnames(sed26[,keep]) %in% colnames(sed26)[which(nchar(colnames(sed26))<3)]])
+
+# do CLR transformation to remove compositional closure
+s26_clr[,elements] <- 
+  t(apply(s26_clr[,elements], MARGIN = 1,
+          FUN = function(x){log(x) - mean(log(x), na.rm=T)}))
+                                                              cat("\n\n")
+# check missing value count in numeric columns
+sapply(s26_clr[,which(sapply(s26_clr, is.numeric))], function(x){sum(is.na(x))})
+
+# the next code not used yet as we don't have enough XRD data
+
+# s26_clr[,43:46] <- t(apply(sed26[,43:46], MARGIN = 1,
+#                           FUN = function(x){log(x) - mean(log(x))}))
+# head(s26_clr) # ; summary(s26_clr) ; nrow(s26_clr) ; nrow(na.omit(s26_clr))
+# RcmdrMisc::numSummary(s26_clr[,6:ncol(s26_clr)])
+# s26_clr$LocType3 <- as.character(s26_clr$LocType)
+# s26_clr$LocType3[grep("Bot",s26_clr$LocType3)] <- NA
+# s26_clr$LocType3[grep("Mcness.Sus",s26_clr$LocType3)] <- NA
+# s26_clr$LocType3[grep("Thomp.Sus",s26_clr$LocType3)] <- NA
+# s26_clr$LocType3 <- droplevels(as.factor(s26_clr$LocType3))
+```
+
+```{r PCA-on-elements}
+# do PCA on CLR-transformed elemental concentrations
+pca2 <- prcomp(s26_clr[,elements], scale. = TRUE)
+
+# show variable weightings for first 8 principal components (PCs)
+{cat("\nVariable weightings\n")
+pca2$rot[,1:8] |> round(3)}
+
+# display component variances (eigenvalues)
+{cat("...\n\nComponent Variances - CLR-transformed (open) data\n")
+  print(round(pca2$sdev^2,3))}
+
+# display proportions of variance explained by successive PCs
+{cat("...\n\nProportions of variance explained by each component\n")
+  round(pca2$sdev^2/sum(pca2$sdev^2),3)}
+
+# display cumulative proportions of variance explained by PCs
+{cat("...\n\nCumulative proportion of variance explained by each component\n")
+  cumsum(round(pca2$sdev^2/sum(pca2$sdev^2),3))}
+```
+
+```{r summarise-PCA-eigenvalues, results='asis'}
+cat("\nThere are",sum(round(pca2$sdev^2,3)>1), "principal components with eigenvalues greater than 1."); cat("\nThese",sum(round(pca2$sdev^2,3)>1), "components together explain",100*cumsum(round(pca2$sdev^2/sum(pca2$sdev^2),3))[sum(round(pca2$sdev^2,3)>1)],"% of cumulative multiple variance.")
+```
+
+```{r PCA-elements-XRD-screeplot}
+# plot a scree plot (variance vs. component) also showing variance=1
+plot(pca2); abline(h=1, lty=2, col="#8080ff80")
+axis(1, at=seq(0.7,11.5,l=10), labels=c(1:10)); mtext("Component",1,2,font=2)
+```
+
+```{r biplots-observations-by-location-and-size, fig.width=12.8, fig.height=12.8, paged.print=FALSE}
+# make factor
+s26_clr$LocSieve <- paste0(s26_clr$Loc,"-",s26_clr$Sieve)
+s26_clr$LocSieve <- as.factor(gsub("-NA","",s26_clr$LocSieve, fixed=T))
+
+# set up colours and graphics parameters
+palette(c("black", turbo(16, alpha=0.7),"white"))
+par(mfrow=c(2,2), mar = c(3.5,3.5,3.5,3.5), oma = c(0,0,0,0),
+    mgp=c(1.7,0.3,0), tcl = 0.25, font.lab=2, cex.lab=1.2, cex.axis=1.1,
+    lend = "square", ljoin = "mitre")
+
+# FIRST BIPLOT --------------------------------------------------------
+# choose components and set scaling factor (`sf`) & symbol sizes (`szs`)
+v1 <- 1; v2 <- 2; sf <- 0.98; szs <- rep(c(1.4,1.3,1.2,1.2,1.2),l=16)*1.2
+
+# plot standard PCA biplot but hiding observation scores ("transparent")
+biplot(pca2, choices = c(v1,v2), col = c("transparent","black"), cex=c(1,1.18)*sf,
+       pc.biplot = FALSE, arrow.len = 0.08, cex.lab=1.2*sf, scale=1, 
+       # change xlim, ylim if needed, to show all data
+       #xlim = c(-0.6,0.6), ylim = c(-0.6,0.6), 
+       xlab = paste0("Scaled PC",v1," Component Loadings"),
+       ylab = paste0("Scaled PC",v2," Component Loadings"))
+
+# add top and right axis labels
+mtext(paste0("Scaled PC",v1," Observation Scores"), 3, 1.4, font = 2)
+mtext(paste0("Scaled PC",v2," Observation Scores"), 4, 1.4, font = 2)
+
+# add observation scores to plot; different symbols/colours by `LocSieve` factor
+points(pca2$x[,v1]*sf, pca2$x[,v2]*sf*1.5,
+       pch = rep(c(21:25),l=16)[s26_clr$LocSieve],
+       lwd = 1, bg = c(2:17)[s26_clr$LocSieve],
+       col = 1,
+       cex = szs[s26_clr$LocSieve])
+box() # redraw plot frame just in case ;^)
+
+# add a legend
+plot(0:1,0:1, type="n", axes=F, ann=F, bty="n")
+legend("left", cex=1.2, ncol=2, inset=0.02, box.col="#888", bg="#ffffff40",
+       legend=gsub("."," ",levels(s26_clr$LocSieve),fixed=T),
+       pch=rep(c(21:25),l=16), pt.bg=c(2:17), pt.cex=szs*sf*1.2)
+text(0,0.15, labels=paste("Br = bridge","\nCP = Car Park","\nDS = downstream",
+                         "\nFB = firebreak","\nUS = upstream"), pos=4, cex=1.2)
+
+# SECOND BIPLOT ------------------------------
+# choose components and set scaling factor (sf)
+v1 <- 3; v2 <- 4; sf <- 0.8
+
+biplot(pca2, choices = c(v1,v2), col = c("transparent","black"), cex=c(1,1.18)*sf,
+       pc.biplot = FALSE, arrow.len = 0.08, cex.lab=1.2*sf, scale=1,
+      # xlim = c(-0.6,0.6), ylim = c(-0.6,0.6),
+       xlab = paste0("Scaled PC",v1," Component Loadings"),
+       ylab = paste0("Scaled PC",v2," Component Loadings"))
+mtext(paste0("Scaled PC",v1," Observation Scores"), 3, 1.4, font = 2)
+mtext(paste0("Scaled PC",v2," Observation Scores"), 4, 1.4, font = 2)
+points(pca2$x[,v1]*sf, pca2$x[,v2]*sf*1.5,
+       pch = rep(c(21:25),l=16)[s26_clr$LocSieve],
+       lwd = 1, bg = c(2:17)[s26_clr$LocSieve],
+       col = 1,
+       cex = szs[s26_clr$LocSieve])
+box()
+
+# add a legend
+plot(0:1,0:1, type="n", axes=F, ann=F, bty="n")
+legend("left", cex=1.2, ncol=2, inset=0.02, box.col="#888", bg="#ffffff40",
+       legend=gsub("."," ",levels(s26_clr$LocSieve),fixed=T),
+       pch=rep(c(21:25),l=16), pt.bg=c(2:17), pt.cex=szs*sf*1.2)
+```
+
+# Linear Discriminant Analysis Prediction
+
+## 1. Train with everything except pool bottom (core) sediments
+
+```{r do-initial-LDA-predict-train-with-sources, paged.print=FALSE}
+# 1. add PCs to data frame 
+s26_clr <- cbind(s26_clr, pca2$x[,1:12])
+
+# train with everything except pool bottom sediments
+LDAdata <- droplevels(s26_clr[s26_clr$Type!="sink",])
+
+# 2. run linear discriminant analysis (LDA) to predict factor level from PCs
+lda1 <- lda(Loc ~ PC1+PC2+PC3+PC4+PC5+PC6+PC7+PC8+PC9+PC10, 
+            data=LDAdata) # for cross-validation include , CV=TRUE
+print(lda1)
+
+# show LDA predictions
+cat("\n\nLDA self-predictions\n====================\n")
+lda1.pred <- predict(lda1) # won't work if CV=TRUE is included in lda(...)
+predRslt <- data.frame(Actual=LDAdata$Loc,round(lda1.pred$post,4),
+                       Predicted=colnames(lda1.pred$posterior)[apply(lda1.pred$posterior,1,
+                                                                     function(x){which(x==max(x))})],
+                       check.names = F)
+predRslt$correct <- predRslt$Actual==predRslt$Predicted
+# colnames(predRslt)[2:5] <- c("Ara.2mm","Ara.63µm","McN.2mm","McN.63µm")
+print(predRslt, row.names=F)
+```
+
+### 1.1 Predict where pool bottom sediments came from...
+
+```{r}
+lda.pred2 <- predict(lda1, newdata=s26_clr[s26_clr$Type=="sink",])
+predRslt2 <- data.frame(Actual_Sample=s26_clr[s26_clr$Type=="sink","Sample.ID"],
+                       Predicted=colnames(lda.pred2$posterior)[apply(lda.pred2$posterior,1,
+                                                                     function(x){which(x==max(x))})],
+                        round(lda.pred2$post,4),
+                       check.names = F)
+# predRslt2$correct <- predRslt2$Actual==predRslt2$Predicted
+# colnames(predRslt2)[2:5] <- c("Ara.2mm","Ara.63µm","McN.2mm","McN.63µm")
+print(predRslt2, row.names=F)
+```
+
+## 2. Train with only terrestrial sediments (car park, firebreaks, riparian soil)
+
+```{r do-initial-LDA-predict-train-with-erosional, paged.print=FALSE}
+# 1. add PCs to data frame 
+s26_clr <- cbind(s26_clr, pca2$x[,1:12])
+
+LDAdata <- droplevels(s26_clr[s26_clr$Type=="erosional",])
+
+# 2. run linear discriminant analysis (LDA) to predict factor level from PCs
+lda1 <- lda(Loc ~ PC1+PC2+PC3+PC4+PC5+PC6+PC7+PC8+PC9+PC10, 
+            data=LDAdata) # for cross-validation include , CV=TRUE
+print(lda1)
+
+# show LDA predictions
+cat("\n\nLDA predictions\n===============\n")
+lda1.pred <- predict(lda1) # won't work if CV=TRUE is included in lda(...)
+predRslt <- data.frame(Actual=LDAdata$Loc,round(lda1.pred$post,4),
+                       Predicted=colnames(lda1.pred$posterior)[apply(lda1.pred$posterior,1,
+                                                                     function(x){which(x==max(x))})],
+                       check.names = F)
+predRslt$correct <- predRslt$Actual==predRslt$Predicted
+# colnames(predRslt)[2:5] <- c("Ara.2mm","Ara.63µm","McN.2mm","McN.63µm")
+print(predRslt, row.names=F)
+```
+
+### 2.1 Predict which erosional source contributes to suspended or bed sediments
+
+```{r}
+lda.pred2 <- predict(lda1, newdata=s26_clr[s26_clr$Type != "erosional",])
+predRslt2 <- data.frame(Actual_Sample=s26_clr[s26_clr$Type != "erosional","Sample.ID"],
+                       Predicted=colnames(lda.pred2$posterior)[apply(lda.pred2$posterior,1,
+                                                                     function(x){which(x==max(x))})],
+                        round(lda.pred2$post,4),
+                       check.names = F)
+# predRslt2$correct <- predRslt2$Actual==predRslt2$Predicted
+# colnames(predRslt2)[2:5] <- c("Ara.2mm","Ara.63µm","McN.2mm","McN.63µm")
+print(predRslt2, row.names=F)
+```
+
+
+```{r visualise-lda, fig.width=12, fig.height=12}
+sf <- 0.33
+par(mfrow = c(2,2), mar = c(3.5,3.5,1,1), mgp = c(1.5,0.3,0), tcl = 0.25,
+    lend = "square", ljoin = "mitre", cex.main = 0.9, font.lab=2)
+palette(c("black",turbo(6, alpha=0.5),"white"))
+
+plot(lda1$scaling[,1], lda1$scaling[,2], type="n", 
+     xlim = c(-3,3),  ylim = c(-3,3), 
+     xlab="Linear Discriminant [1]", ylab="Linear Discriminant [2]"#, 
+     #main="Variable Coefficients [LD1, LD2]"
+     )
+abline(v=0,col="grey",lty=2); abline(h=0,col="grey",lty=2)
+for(i in 1:NROW(lda1$scaling)){
+  arrows(0,0,lda1$scaling[i,1],lda1$scaling[i,2],
+         length = 0.08, col = "grey60")
+  }
+text(lda1$scaling[,1]*1.1, lda1$scaling[,2]*1.1, 
+     labels=row.names(lda1$scaling[,1:2]),
+     cex = 0.9, col = 1, pos=c(1,2,3,4), offset = 0.01)
+points(lda1.pred$x[,1]*sf, lda1.pred$x[,2]*sf, 
+       pch=rep(c(21:25),l=6)[lda1.pred$class], 
+       bg=c(2:7)[lda1.pred$class], 
+       cex=1.5)
+# mtext("(a)", 3, -1.5, adj = 0.05, cex = 1.2, font = 2)
+plot(0:1,0:1, type="n", axes=F, ann=F, bty="n")
+legend("left", ncol=1, legend=levels(lda1.pred$class), 
+       pt.bg=c(2:7), pch=rep(c(21:25),l=6), 
+       bty="n", box.col="grey90", y.intersp = 1, 
+       title="Potential Source", title.font=4,
+       box.lwd=2, inset=0.02, pt.cex=1.5, cex=1.4)
+
+plot(lda1$scaling[,1], lda1$scaling[,3], type="n", 
+     xlim = c(-3,3),  ylim = c(-3,3), 
+     xlab="Linear Discriminant [1]", ylab="Linear Discriminant [3]"#, 
+     #main="Variable Coefficients [LD1, LD2]"
+     )
+abline(v=0,col="grey",lty=2); abline(h=0,col="grey",lty=2)
+for(i in 1:NROW(lda1$scaling)){
+  arrows(0,0,lda1$scaling[i,1],lda1$scaling[i,3],
+         length = 0.08, col = "grey60")
+  }
+text(lda1$scaling[,1]*1.1, lda1$scaling[,3]*1.1, 
+     labels=row.names(lda1$scaling[,1:2]),
+     cex = 0.9, col = 1, pos=c(1,2,3,4), offset = 0.01)
+points(lda1.pred$x[,1]*sf, lda1.pred$x[,3]*sf, 
+       pch=rep(c(21:25),l=6)[lda1.pred$class], 
+       bg=c(2:7)[lda1.pred$class], 
+       cex=1.5)
+# mtext("(a)", 3, -1.5, adj = 0.05, cex = 1.2, font = 2)
+plot(0:1,0:1, type="n", axes=F, ann=F, bty="n")
+legend("left", ncol=1, legend=levels(lda1.pred$class), 
+       pt.bg=c(2:7), pch=rep(c(21:25),l=6), 
+       bty="n", box.col="grey90", y.intersp = 1, 
+       title="Potential Source", title.font=4,
+       box.lwd=2, inset=0.02, pt.cex=1.5, cex=1.4)
+```
+
+# Random Forest Prediction
+
+```{r random-forest, paged.print=FALSE}
+rf1 <- randomForest(LocSieve ~ ., 
+                data=s26_clr[, c("LocSieve", "PC1", "PC2", "PC3", "PC4", "PC5", 
+                           "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12")], 
+        classwt = as.numeric(summary(s26_clr$LocSieve))/nrow(s26_clr), 
+        # tuning parameters
+        mtry=6,
+        ntree=1000,
+        nodesize=1,
+        maxnodes=10,
+        sampsize=10,
+        replace=FALSE,
+        )
+# str(rf1)
+rf1
+rf1predSumm <- data.frame(Actual=s26_clr$LocSieve, Predicted=rf1$predicted, Correct=(s26_clr$LocSieve==rf1$pred))
+cat("\n","   Random Forest prediction summary","\n",rep("=",38),"\n",sep="")
+print(rf1predSumm, row.names = F)
+```
+
+
+# Support Vector Machine Prediction
+
+```{r support-vector-machine}
+sv1 <- svm(LocSieve ~ ., 
+                data=s26_clr[, c("LocSieve", "PC1", "PC2", "PC3", "PC4", "PC5", 
+                           "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12")], 
+        ## TUNING PARAMETERS
+        cost=2,     # default = 1
+        gamma=0.05, # default is 1/(number of predictors) # 1/12 = 0.083
+        # degree=3, # only for polynomial kernel # see help for others
+        # leave this one 👇
+        kernel="radial" # kernel can be "linear" or "polynomial"
+        )
+# str(sv1)
+print(sv1)
+sv1pred <- predict(sv1, s26_clr[, c("LocSieve", "PC1", "PC2", "PC3", "PC4", "PC5", 
+                           "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12")])
+cat("\nPredictions from Support Vector Machine\n",rep("=",39),"\n",sep="")
+print(data.frame(Actual=s26_clr$LocSieve, Predicted=sv1pred, Correct=(s26_clr$LocSieve==sv1pred)))
+```
+
+# Gradient Boosting Prediction
+
+A gradient-boosted _tree_ classifier is the only option for classifying 
+non-numeric categories.
+
+```{r gradient-boosting-tree}
+gbTree1 <- xgboost(x=s26_clr[, c("LocSieve", "PC1", "PC2", "PC3", "PC4", "PC5", 
+                           "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12")],
+               y=s26_clr$LocSieve, 
+        ## TUNING PARAMETERS
+        objective = "multi:softprob", # ... default for factor with >2 levels
+        eval_metric = "logloss",          # default "logloss" for classification
+        nrounds = 100L,               # default 100 (L means integer)
+        max_depth = 6,                # default 6
+        learning_rate = 0.3,          # default 0.3 for tree booster
+        reg_lambda = 1,               # default 1 for tree booster
+        booster="gbtree"
+        )
+# str(gbTree1)
+# print(gbTree1)
+gbTree1pred <- predict(gbTree1, s26_clr[, c("LocSieve", "PC1", "PC2", "PC3", "PC4", "PC5", 
+                           "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12")])
+cat("\nPredictions from Gradient boosting (linear)\n",rep("=",43),"\n",sep="")
+gbTree1summ <- data.frame(Actual=s26_clr$LocSieve, 
+                 Predicted=colnames(gbTree1pred)[unname(apply(gbTree1pred, 1, 
+                                  FUN=function(x){which(x==max(x, na.rm=T))}))])
+gbTree1summ$Correct <- gbTree1summ$Actual == gbTree1summ$Predicted
+print(gbTree1summ)
+```
+
+
+
+```
+   _____ ____________   __    ___   ___________   ________  ____  ___   ____ __
+  / ___// ____/ ____/  / /   /   | / ___/_  __/  / ____/ / / / / / / | / / //_/ /
+  \__ \/ __/ / __/    / /   / /| | \__ \ / /    / /   / /_/ / / / /  |/ / ,<   /
+ ___/ / /___/ /___   / /___/ ___ |___/ // /    / /___/ __  / /_/ / /|  / /| | / 
+/____/_____/_____/  /_____/_/  |_/____//_/     \____/_/ /_/\____/_/ |_/_/ |_|O 
+```
+>=-=-=-=-=-=-=-=-=-=- nothing except final chunk works yet! -=-=-=-=-=-=-=-=-=-=
+
+```{r stepwise-LDA-on-Principal-Components}
+# based on just the suspended sediment samples 
+# (i.e. having non-NA s26_clr$LocType3)
+
+# run `stepclass()` multiple times to get greatest accuracy score
+
+steplda2 <- stepclass(s26_clr[,c("PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10","PC11","PC12")], 
+                  grouping=s26_clr$LocSieve, 
+                  method="lda", criterion="AC", improvement=0.005) # AC=accuracy
+print(steplda2)
+(lda2 <- lda(LocType3 ~ PC2+PC3+PC5+PC8+PC9+PC10+PC12, 
+             data=s26_clr[!is.na(s26_clr[,48]), ]))
+ldapred <- predict(lda2)
+trainChk <- data.frame(Actual=as.character(s26_clr[!is.na(s26_clr[,48]), 48]),
+      Predicted=as.character(ldapred$class))
+trainChk$is.Correct <- trainChk[,1]==trainChk[,2]
+print(trainChk)
+```
+
+```{r predict-bottom-sediments-from-lda-model-for-suspended-sediments, paged.print=FALSE}
+ldapred2 <- predict(lda2, newdata=s26_clr[is.na(s26_clr[,48]),49:60])
+
+postLDA2 <- data.frame(BotSed=as.character(s26_clr[is.na(s26_clr[,48]),47]),
+                       round(ldapred2$posterior,3))
+row.names(postLDA2) <- paste0(row.names(postLDA2),"_",postLDA2[,1])
+(postLDA2 <- postLDA2[,2:5])
+```
+
+```{r bar-plot-predictions, fig.height=10, fig.width=8}
+palette(c("black", mako(4, begin=0.2, end=0.85, alpha=0.85), "white"))
+par(mfrow=c(1,1), mar=c(3,5,1,1))
+barplot(t(postLDA2), horiz=T, las=1, col=c(2:5),
+        names.arg=substr(row.names(postLDA2),
+                         str_locate(row.names(postLDA2),"_")+1,
+                         nchar(row.names(postLDA2))-4),
+        xlab="Posterior probabilities", xlim=c(0,1), xaxs="i")
+mtext("Sample", 2, 4, font=2) ; box()
+legend("bottomright", inset=0.02, cex=1.2, bg="#ffffffd0", box.col="#000000b0", 
+       legend=gsub(".Sus","",levels(s26_clr$LocType3)),
+       pch=22, pt.bg=c(2:5), pt.cex=2.5, 
+       title="\nPossible\nSource", title.font=3)
+
+# basic 3d scatter
+library(scatterplot3d)
+palette(c("black", mako(4, begin=0.2, end=0.85, alpha=0.85), "white"))
+scatterplot3d(ldapred$x[,2], ldapred$x[,1], ldapred$x[,3], scale.y=0.5, 
+              bg = c(2:5)[s26_clr[!is.na(s26_clr[,48]),48]],
+              pch=c(21:24)[s26_clr[!is.na(s26_clr[,48]),48]],
+              type="h", lty.hplot=3, cex.symbols = 2,
+              xlab="LD1", ylab="LD2", zlab="LD3")
+legend("topright", ncol = 1, 
+       legend=toupper(substr(levels(s26_clr$LocType3),1,
+                             nchar(levels(s26_clr$LocType3))-4)), 
+       pt.bg=c(2:5), pch=c(21:24), pt.lwd = 1, bg="#ffffffb0",
+       box.col="lightgrey", y.intersp = 1.5, pt.cex=2, cex=1.25, 
+       title="\nPotential\nsource sediment")
+```
+
+```{r ggplot-and-plotly-3D-scatter}
+data <- data.frame(x=ldapred$x[,1], y=ldapred$x[,2], z=ldapred$x[,3], 
+                      LocType3=s26_clr[!is.na(s26_clr[,48]),48])
+symz <- c("circle", "square", "diamond", "x")
+# Convert the ggplot object to a plotly object for 3D plotting
+lda3d <- plot_ly(data, x = ~x, y = ~y, z = ~z, color = ~LocType3, 
+                 colors=mako(4, begin=0.2, end=0.75), symbol = ~LocType3, 
+             type = "scatter3d", mode = "markers", symbols = symz,
+             marker = list(size = 5)) |> 
+  layout(title = "LDA following PCA\n(plot can be rotated by click-drag/swipe)",
+         scene = list(xaxis = list(title = "LD 1"),
+                      yaxis = list(title = "LD 2"),
+                      zaxis = list(title = "LD 3")))
+lda3d # Display the 3D scatter plot
+```
+
+```{r LDA-biplot-2D-scatter-plots, fig.width=10, fig.height=10}
+par(mfrow=c(2,2), mar=c(4,4,4,4), mgp=c(1.6,0.3,0), tcl=0.25, font.lab=2, cex.lab=1.25)
+# ------------------ plot 1 -=-=-=-=-=-=-=-=-
+v1 <- 1; v2 <- 2
+plot(lda2$scaling[,v1], lda2$scaling[,v2], 
+     type="n", xlim = c(-1.2,1.5),  ylim = c(-1.1,1.2), 
+    # main="Variable Coefficients [LD1, LD2]", 
+     xlab=paste("Variable Weighting, Linear Discriminant",v1), 
+     ylab=paste("Variable Weighting, Linear Discriminant",v2))
+abline(v=0,col="grey",lty=3); abline(h=0,col="grey",lty=3)
+for(i in 1:NROW(lda2$scaling)){
+  arrows(0,0,lda2$scaling[i,v1],lda2$scaling[i,v2],
+         length = 0.08, col = "#00000060", lwd=2) }
+tf <- 1.04 ; of <- 0.333
+axis(3, at=seq(-3,3)*of, labels=seq(-3,3))
+mtext("Observation scores LD1", line=1.5, font=2)
+axis(4, at=seq(-3,3)*of, labels=seq(-3,3))
+mtext("Observation scores LD2", side=4, line=1.5, font=2)
+shadowtext(lda2$scaling[,v1]*tf, lda2$scaling[,v2]*tf, 
+     labels=row.names(lda2$scaling),
+     cex = 1.2, col = 1, bg="#ffffff80", pos=c(3,2,1,1,4), offset = 0.012)
+points(ldapred$x[,v1]*of, ldapred$x[,v2]*of, lwd=1, 
+       cex=c(1.8,1.5,1.5,1.5)[s26_clr[!is.na(s26_clr[,48]),48]], 
+       pch=c(21:24)[s26_clr[!is.na(s26_clr[,48]),48]],
+       bg=c(2,3,4,5)[s26_clr[!is.na(s26_clr[,48]),48]])
+
+# ------------------ plot 2 -=-=-=-=-=-=-=-=-
+v1 <- 1; v2 <- 3
+plot(lda2$scaling[,v1], lda2$scaling[,v2], 
+     type="n", xlim = c(-1.2,1.5),  ylim = c(-0.8,0.8), 
+     # main="Variable Coefficients [LD1, LD2]", 
+     xlab=paste("Variable Weighting, Linear Discriminant",v1), 
+     ylab=paste("Variable Weighting, Linear Discriminant",v2))
+abline(v=0,col="grey",lty=3); abline(h=0,col="grey",lty=3)
+for(i in 1:NROW(lda2$scaling)){
+  arrows(0,0,lda2$scaling[i,v1],lda2$scaling[i,v2],
+         length = 0.08, col = "#00000060", lwd=2) }
+tf <- 1.04 ; of <- 0.333
+axis(3, at=seq(-3,3)*of, labels=seq(-3,3))
+mtext(paste0("Observation scores LD",v1), line=1.5, font=2)
+axis(4, at=seq(-3,3)*of, labels=seq(-3,3))
+mtext(paste0("Observation scores LD",v2), side=4, line=1.5, font=2)
+shadowtext(lda2$scaling[,v1]*tf, lda2$scaling[,v2]*tf, 
+     labels=row.names(lda2$scaling),
+     cex = 1.2, col = 1, bg="#ffffff80", pos=c(3,2,1,1,4), offset = 0.012)
+points(ldapred$x[,v1]*of, ldapred$x[,v2]*of, lwd=1, 
+       cex=c(1.8,1.5,1.5,1.5)[s26_clr[!is.na(s26_clr[,48]),48]], 
+       pch=c(21:24)[s26_clr[!is.na(s26_clr[,48]),48]],
+       bg=c(2,3,4,5)[s26_clr[!is.na(s26_clr[,48]),48]])
+
+# ------------------ plot 3 -=-=-=-=-=-=-=-=-
+v1 <- 2; v2 <- 3
+plot(lda2$scaling[,v1], lda2$scaling[,v2], 
+     type="n", xlim = c(-1.1,1.2),  ylim = c(-0.8,0.8), 
+     # main="Variable Coefficients [LD1, LD2]", 
+     xlab=paste("Variable Weighting, Linear Discriminant",v1), 
+     ylab=paste("Variable Weighting, Linear Discriminant",v2))
+abline(v=0,col="grey",lty=3); abline(h=0,col="grey",lty=3)
+for(i in 1:NROW(lda2$scaling)){
+  arrows(0,0,lda2$scaling[i,v1],lda2$scaling[i,v2],
+         length = 0.08, col = "#00000060", lwd=2) }
+tf <- 1.04 ; of <- 0.333
+axis(3, at=seq(-3,3)*of, labels=seq(-3,3))
+mtext(paste0("Observation scores LD",v1), line=1.5, font=2)
+axis(4, at=seq(-3,3)*of, labels=seq(-3,3))
+mtext(paste0("Observation scores LD",v2), side=4, line=1.5, font=2)
+shadowtext(lda2$scaling[,v1]*tf, lda2$scaling[,v2]*tf, 
+     labels=row.names(lda2$scaling),
+     cex = 1.2, col = 1, bg="#ffffff80", pos=c(3,2,1,1,4), offset = 0.012)
+points(ldapred$x[,v1]*of, ldapred$x[,v2]*of, lwd=1, 
+       cex=c(1.8,1.5,1.5,1.5)[s26_clr[!is.na(s26_clr[,48]),48]], 
+       pch=c(21:24)[s26_clr[!is.na(s26_clr[,48]),48]],
+       bg=c(2,3,4,5)[s26_clr[!is.na(s26_clr[,48]),48]])
+
+# ------------------ legend -=-=-=-=-=-=-=-=-
+plot(0:1, 0:1, type="n", ann=F, bty="n", axes=F)
+legend("left", ncol = 1, 
+       legend=toupper(substr(levels(s26_clr$LocType3),1,
+                             nchar(levels(s26_clr$LocType3))-4)), 
+       pt.bg=c(2:5), pch=c(21:24), pt.lwd = 1,
+       box.col="lightgrey", y.intersp = 1.5, pt.cex=c(2.3,2,2,2), cex=1.5, 
+       title="\nPotential\n source sediment ")
+
+```
+
+```{r stepwise-LDA-on-Measured-Variables}
+# based on just the suspended sediment samples 
+# (i.e. having non-NA s26_clr$LocType3)
+
+# run `stepclass(...)` multiple times to get greatest accuracy score
+lda0step <- stepclass(s26_clr[!is.na(s26_clr[,48]),5:46], 
+                  grouping=s26_clr[!is.na(s26_clr[,48]),48], 
+                  method="lda", criterion="AC", improvement=0.001) # AC=accuracy
+(lda0 <- lda(LocType3 ~ Pb + U + Er + Mo + La, 
+            data=s26_clr[!is.na(s26_clr[,48]), ])) # accuracy: 0.99993
+ldapred0 <- predict(lda0)
+trainChk <- data.frame(Actual=as.character(s26_clr[!is.na(s26_clr[,48]), 48]),
+                       Predicted=as.character(ldapred0$class))
+trainChk$is.Correct <- trainChk[,1]==trainChk[,2]
+print(trainChk)
+```
+
+```{r pred-bottom-seds-by-LDA-for-susp-seds, paged.print=FALSE}
+# predict bottom sediments from lda model for suspended sediments
+ldapred02 <- predict(lda0, newdata=s26_clr[is.na(s26_clr[,48]),5:46])
+
+postLDA0 <- data.frame(BotSed=as.character(s26_clr[is.na(s26_clr[,48]),47]),
+                       round(ldapred02$posterior,3))
+row.names(postLDA0) <- paste0(row.names(postLDA0),"_",postLDA0[,1])
+(postLDA0 <- postLDA0[,2:5])
+```
+
+```{r bar-plot-2,fig.width=8, fig.height=10}
+# bar plot showing posterior probabilities for each bottom sample being
+# classified as one of the suspended
+library(viridis); library(stringr)
+palette(c("black", mako(4, begin=0.2, end=0.85, alpha=0.85), "white"))
+par(mfrow=c(1,1), mar=c(3,5,1,1), mgp=c(1.7,0.2,0), tcl=0.25, font.lab=2)
+barplot(t(postLDA0), horiz=T, las=1, col=c(2:5),
+        names.arg=substr(row.names(postLDA0),
+                         str_locate(row.names(postLDA0),"_")+1,
+                         nchar(row.names(postLDA0))-4),
+        xlab="Posterior probabilities", xlim=c(0,1), xaxs="i")
+mtext("Bottom Sample", 2, 3.5, font=2, cex=1.2) ; box()
+legend("topright", inset=0.05, cex=1.2, bg="#ffffffd0", box.col="#000000b0", 
+       legend=gsub(".Sus","",levels(s26_clr$LocType3)),
+       pch=22, pt.bg=c(2:5), pt.cex=2.5, 
+       title="\nPossible\nSource", title.font=3, title.col=2)
+```
+
+# This is not prediction any more...
+
+## compare metals against guidelines for sediment quality 
+
+```{r boxplots-vs-SQGs, fig.width=12, fig.height=6}
+lsnames=c("A 2mm","A 63µm","Mc 2mm","Mc 63µm")
+par(mfrow=c(2,3), mar=c(3,3,1,1), mgp=c(1.6,0.3,0), tcl=0.25, font.lab=2, 
+    cex.lab=1.4, cex.axis=1.4)
+palette(c("black", turbo(4, alpha=0.5), turbo(4, alpha=0.85),"#CDAD0080","#B2222280", "#FFF"))
+with(sed26, boxplot(Cr~LocSieve, log="y", col=c(2,3,4,5),
+                    names=lsnames, xlab="Location & size fraction"))
+with(sed26, stripchart(Cr~LocSieve, add=T, method="jitter", pch=15, log="y", cex=1.5, 
+                       vertical=T, col=c(6:9)))
+abline(h=c(80,370), lwd=c(1,2), col=c(10,11))
+with(sed26, boxplot(Cu~LocSieve, log="y", col=c(2,3,4,5),
+                    names=lsnames, xlab="Location & size fraction"))
+with(sed26, stripchart(Cu~LocSieve, add=T, method="jitter", pch=15, log="y", cex=1.5, 
+                       vertical=T, col=c(6:9)))
+abline(h=c(65,270), lwd=c(1,2), col=c(10,11))
+with(sed26, boxplot(Pb~LocSieve, log="y", col=c(2,3,4,5),
+                    names=lsnames, xlab="Location & size fraction"))
+with(sed26, stripchart(Pb~LocSieve, add=T, method="jitter", pch=15, log="y", cex=1.5, 
+                       vertical=T, col=c(6:9)))
+abline(h=c(50,220), lwd=c(1,2), col=c(10,11))
+with(sed26, boxplot(Ni~LocSieve, log="y", col=c(2,3,4,5),
+                    names=lsnames, xlab="Location & size fraction"))
+with(sed26, stripchart(Ni~LocSieve, add=T, method="jitter", pch=15, log="y", cex=1.5, 
+                       vertical=T, col=c(6:9)))
+abline(h=c(21,52), lwd=c(1,2), col=c(10,11))
+with(sed26, boxplot(Zn~LocSieve, log="y", col=c(2,3,4,5),
+                    names=lsnames, xlab="Location & size fraction"))
+with(sed26, stripchart(Zn~LocSieve, add=T, method="jitter", pch=15, log="y", cex=1.5, 
+                       vertical=T, col=c(6:9)))
+abline(h=c(200,410), lwd=c(1,2), col=c(10,11))
+plot(0:1, 0:1, type="n", ann=F, bty="n", axes=F)
+legend("center", box.col="lightgrey", legend=c("GV-high ","DGV"), lwd=c(2,1), 
+       col=c("#B2222280","#CDAD0080"), cex=1.5, 
+       title="\nSediment\nGuidelines", title.font=2)
+```
+

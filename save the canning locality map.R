@@ -11,6 +11,7 @@ if(!require(viridis)) install.packages("viridis")
 library(sf)            # essential for maps and spatial analysis in R
 library(maptiles)      # for downloading map tile images
 library(prettymapr)    # for making north arrow and scale bar
+  source("../scalebar_use_sf_prettymapr.R")
 library(TeachingDemos) # for shadowtext() function (outlined text)
 library(viridis)       # for accessible colour palettes
 secretss <- read.csv("../StadiaMaps-API.csv")[1,1]
@@ -30,6 +31,10 @@ git<-"https://github.com/Ratey-AtUWA/Learn-R-web/raw/refs/heads/main/"
 
 coast <- st_read("../Ashfield-REE/Coastline_LGATE_070.shp")
 drains <- st_read("../shapefiles/DoW_Stormwater_Drains.shp")
+lga <- st_read("../shapefiles/LGA/LGA_Boundaries_LGATE_233.shp")
+  centroids <- data.frame(st_coordinates(st_centroid(lga)), labels=lga$name)
+  centroids$name <- unlist(strsplit(centroids$labels, ","))[seq(1,278,2)]
+
 lu <- st_read("../shapefiles/zones-reserves/Region_Scheme_Zones_Reserves_DPLH_023.shp")
 lu$descriptio <- as.factor(lu$descriptio)
 
@@ -58,10 +63,11 @@ SthRivDrns <- subset(WCdrn, subset=WCdrn$COUNCILID=="FORRESTDALE M.D." |
 # shl <- st_read("../shapefiles/SurfaceHydrology/SurfaceHydrologyLinesNational.gdb")
 # shlPer <- subset(shl, shl$PERENNIALITY=="Perennial"|shl$PERENNIALITY=="Perennial")
 # canningE <- shl[grep("CANNING RIVER", shl$NAME),]
+pools <- read.csv("pools.csv")
 canningE <- st_read("../shapefiles/canning/CanningRiverLinear.shp")
 canning <- subset(canningE, subset=canningE$NAME!="CANNING RIVER EAST")
 # st_write(canning,"CanningRiverLinear.shp")
-canning$focus <- cut(as.numeric(canning$STKEHDRID), 
+canning$focus <- cut(as.numeric(canning$STKEHDRI), 
                      breaks = c(0,246200,999999), 
                      labels=F)
 (canLg <- matrix(c(115.83583,-32.4777, 
@@ -74,11 +80,11 @@ canmat <- matrix(c(115.8402,-32.2424,
                    116.1279,-31.9923,
                    116.1279,-32.2424,
                    115.8402,-32.2424),ncol=2,byrow=T)
-kentmat <- matrix(c(115.9203,-32.0375, 
+kentmat <- matrix(c(115.9203,-32.0613, 
                     115.9203,-32.019,
-                    116.1279,-32.019,
-                    116.1279,-32.0375,
-                    115.9203,-32.0375),ncol=2,byrow=T)
+                    115.978,-32.019,
+                    115.978,-32.0613,
+                    115.9203,-32.0613),ncol=2,byrow=T)
 reachmat <- matrix(c(115.9203,-32.155, 
                     115.9203,-32.015,
                     116.128,-32.015,
@@ -104,19 +110,21 @@ locality <- st_as_sf(data.frame(x=c(115.8402,116.1567), y=c(-32.2424,-31.9923)),
 locality # check it worked: should include 'Geodetic CRS:  GDA94'
 
 # use the get_tiles() function with options to download map tiles
-canningMap <- get_tiles(locality, provider="Stadia.Stamen.Terrain", crop=TRUE,
-                        apikey=secretss, zoom=14, forceDownload = T)
+canningMap <- get_tiles(locality, provider="Stadia.Stamen.Terrain", 
+                        crop=TRUE,
+                        apikey=secretss, zoom=13)
 
 uses <- read.csv("land-use-categs.csv")
 uses$Bord <- uses$Colour
 stringr::str_sub(uses$Bord,8,9) <- "d0"
 
 # then plot the map, first setting graphics parameters with par()
+Cairo(3140, 3000, "CannLanduseMap.png", dpi=300)
 par(mfrow=c(1,1), mar=c(3,3,1,1), mgp=c(1.5,0.3,0), font.lab=2,
-    lend="square")
+    lend="square", ljoin="mitre")
 palette(c("black","dodgerblue", "blueviolet", "steelblue4", "lightskyblue4",
           "gold","#99B3CC","#ffffffa0","#ffffffd0","white",
-          "gray48","transparent"))
+          "gray48","transparent","#70503040"))
 # first an empty plot frame based on the map extent
 plot(st_coordinates(locality), type="n", asp=1.2, xaxs="i", yaxs="i",
      xlab="Longitude (\u00b0E)", ylab="Latitude (\u00b0S)")
@@ -133,6 +141,10 @@ plot(kentpool[1],add=T, col=10,lwd=10)
 plot(canningW[2], add=T, col=10, lwd=8)
 plot(canningW[2], add=T, col=2, lwd=4)
 plot(kentpool[1],add=T, col=3,lwd=6,lend="round")
+with(pools, points(Long, Lat, pch=15,col=3, cex=1.4))
+with(pools, points(Long, Lat, pch=12, cex=1.4, col=10))
+with(pools, text(Long, Lat, labels=Pool, pos=c(4,4,2,2,2,2,4,2,1,4),
+                 cex=0.7, font=2))
 shadowtext(116.0169, -32.0919, labels="–", cex=1.5, 
            col=1, bg=10, r=0.06) # Seaforth Weir
 shadowtext(116.0169, -32.0935, col=1, bg=10, cex=0.85, 
@@ -144,7 +156,7 @@ points(c(115.920787,116.1279),c(-32.021289,-32.151955), pch=22,
        cex=1.4, lwd=2, bg=6)
 shadowtext(c(116.006,116.015,115.975, 116.108, 116.09, 116.04, 115.922),
      c(-32.038,-32.065,-32.09,-32.097, -32.14, -32.188, -32.148),
-     labels=c("Bickley Brook","Ellis\nBrook","Southern\nRiver",
+     labels=c("Bickley Brook","Ellis\nBrook","Wungong\nBrook",
               "Stinton\nCreek","Churchman\nBrook","Wungong Brook",
               "Forrestdale\nLake"),
      pos=c(1,4,4,1,1,1,1), font=3, col=4, bg=10, r=0.07)
@@ -157,20 +169,31 @@ addscalebar(pos="topright", plotepsg=4283, htin=0.15, label.cex = 1.2,lwd=2,
 addnortharrow(pos="topright", padin=c(0.75,0.6))
 addscalebar(pos="topright", plotepsg=4283, htin=0.15, label.cex = 1.2, 
             padin=c(0.15,0.35), widthhint = 0.2)
-legend("topright",legend="Map plotted using GDA94 (EPSG:4283)  ", cex=0.8,
-       bg=8, box.col=12, x.int=0.5, y.int=0.5)
+plot(lga[1],add=T, col=12, border=13, lwd=4) # #d2691e40
+with(centroids, text(X,Y,labels=name, cex=1.4, font=4, col="#705030a0"))
+legend("topright", cex=0.8, bg=8, box.col=12, x.int=0.5, y.int=0.5,
+       legend="Map plotted using sf in R; CRS is GDA94 (EPSG:4283)  ")
 legend("bottomleft", bg=9, box.col=10, , inset=c(0.005,0.15),
        legend=c("Canning River","Kent Street Weir Pool","Tributaries",
-                "Water Corporation open drains", "Limits of Study Area"), 
-       col=c(2, 3, 4, 5, 1), 
-       y.intersp=1.15, pt.bg=6, pt.lwd=2, pt.cex=1.4, 
-       lwd=c(4,6,2,1,NA), lty=c("F1","F1","F1","23",NA), pch=c(NA,NA,NA,NA,22))
+                "Water Corporation open drains","LGA Boundaries", 
+                "Limits of Study Area","Identified pools"), 
+       col=c(2, 3, 4, 5, 13, 1,11), pch=c(NA,NA,NA,NA,NA,22,22), 
+       y.intersp=1.05, pt.bg=c(NA,NA,NA,NA,NA,6,3), pt.lwd=2, pt.cex=c(NA,NA,NA,NA,NA,1.4,1.9), 
+       lwd=c(4,6,2,1,4,NA,NA), lty=c("F1","F1","F1","23","F1",NA,NA))
+legend("bottomleft", bg=12, box.col=12, , inset=c(0.005,0.15),
+       legend=c("Canning River","Kent Street Weir Pool","Tributaries",
+                "Water Corporation open drains","LGA Boundaries", 
+                "Limits of Study Area","Identified pools"), 
+       col=c(2, 3, 4, 5, 13, 1,10), pch=c(NA,NA,NA,NA,NA,22,12), 
+       y.intersp=1.05, pt.bg=6, pt.lwd=c(NA,NA,NA,NA,NA,2,1), pt.cex=1.4, 
+       lwd=NA, lty=NA, text.col=12)
 legend("bottom", bg=9, box.col=10, inset=0.002,
        legend=levels(lu$descriptio)[-c(4,7,12:22,32,33)], ncol=3,
        cex=0.95, y.int=0.9, pch=22, pt.cex=2, 
        pt.bg=uses$Colour[-c(4,7,12:22,32,33)], 
        col=uses$Bord[-c(4,7,12:22,32,33)])
 box() # redraw plot frame
+dev.off()
 
 # -~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-~=~-
 #### check landuse legend colours ####
@@ -189,7 +212,9 @@ shadowtext(c(116.006,116.015,115.975, 116.108, 116.09, 116.04, 115.937),
            pos=c(1,4,4,1,1,1,1), font=3, col="steelblue4", bg="white", r=0.07)
 addnortharrow(pos="topright", padin=c(0.75,0.6))
 addscalebar(pos="topright",plotepsg=4283, htin=0.15, label.cex = 1.2, 
-            padin=c(0.15,0.35), widthhint = 0.21)
+            padin=c(0.15,0.35), widthhint = 0.2)
+plot(lga[1],add=T, col="#00000000", border="#ff200040", lwd=4)
+with(centroids, text(X,Y,labels=name, cex=1.6, font=4, col="#ff200040"))
 legend("topright",legend="Map plotted using sf in R; CRS is GDA94 (EPSG:4283)  ", 
        cex=0.75, bg="#ffffffa0", box.col="#00000000", x.int=0.5, y.int=0.5)
 legend("top", bg="#ffffffd0", box.col="white", inset=0.02,
